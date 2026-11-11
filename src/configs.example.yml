@@ -1,0 +1,3 @@
+RAW_DATA: /path/to/raw-reddit-data
+SERVER_WD: /path/to/repository
+SERVER_DATA: /path/to/project-data

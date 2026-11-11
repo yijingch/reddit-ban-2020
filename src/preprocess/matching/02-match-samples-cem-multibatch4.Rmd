@@ -1,0 +1,178 @@
+---
+title: "Match samples for banned subreddits (CEM version, with multiple batches)"
+author: "yijing"
+date: "2025-11-03"
+output: html_document
+---
+
+# Using coarsened exact matching to find references subreddits for banned subreddits
+
+Currently included covariates:
+- `n_subm_author`: the number of active users who have posted a submission in 2019
+- `lifetime_d`: the number of days between the first activity of a subreddit and the earlier of [2020/12/31, the last activity].
+
+The complete user guide for CEM can be found here: https://www.jstatsoft.org/article/view/v030i09
+
+## 1. set up and load data
+
+
+```{r setup, include=FALSE}
+# install.packages(c("cem", "cobalt"))
+library(tcltk)
+library(cem)
+library(MatchIt)
+library(cobalt)
+library(ggplot2)
+library(dplyr)
+```
+
+```{r}
+df <- read.csv("../../data/samples/to_match_table_selfid_banned_3274_260528.csv")
+X <- 10
+N <- 1
+colname <- paste0("u_overlap_min_post_ban_", N)
+df <- df[df$lifetime_d > 0, ]
+df <- df[df[[colname]] <= X | df$if_banned == 1, ]
+table(df$if_banned) 
+df
+```
+
+
+```{r}
+anyNA(df$u_overlap_min_post_ban_2) 
+```
+## PRE-MATCHING ASSESSMENT: L1 imbalance
+
+The dataframe: 
+- `statistic`: the diﬀerence in means for numerical variables (indicated by the second column, type, reporting (diff)) or a chi-square diﬀerence for categorical variables (when the second column reports (Chi2))
+- `L1`: L1_j omputed for the j-th variable separately (which of course does not include interactions)
+- the remaining columns: the diﬀerence in the empirical quantile of the distributions of the two groups for the 0th (min), 25th, 50th, 75th, and 100th (max) percentiles for each variable
+
+```{r}
+var_pairs = list(
+  c("lifetime_d"),
+  c("n_post_author2019_log"),
+  c("n_post_author_till2019_log"),
+  c("n_post2019_log"),
+  c("n_post_till2019_log"),
+  c("lifetime_d", "n_post_author2019_log"),
+  c("lifetime_d", "n_post_author_till2019_log"),
+  c("lifetime_d", "n_post2019_log"),
+  c("lifetime_d", "n_post_till2019_log")
+)
+
+for (i in 1:8) {
+  print(var_pairs[[i]])
+  print(imbalance(group = df$if_banned, data = df[var_pairs[[i]]]))
+}
+```
+
+## COARSENED EXACT MATCHING
+### 1-covariate
+
+```{r}
+# matching only lifetime
+cutpoint_lifetime <- quantile(df$lifetime_d, probs = seq(0.05, 0.95, by = 0.05))
+formula_str <- "if_banned ~ lifetime_d"
+formula_obj <- as.formula(formula_str)
+set.seed(42)
+m.out <- matchit(
+  formula_obj,
+  data = df, 
+  method = "cem",
+  k2k = TRUE,
+  k2k.method = "mahalanobis",
+  m.order = "closest",
+  cutpoints = list(lifetime_d = cutpoint_lifetime)
+)
+
+print(summary(m.out)$nn)
+print(cutpoint_lifetime)
+matched_df <- match.data(m.out)
+print(imbalance(group = matched_df$if_banned, data = matched_df["lifetime_d"]))
+sum_out <- summary(m.out, standardize = TRUE)
+print(sum_out)
+
+param_str <- paste0("X", X, "N", N)
+output_fpath <- paste0("../../data/samples/cem-batch4-new/matched_table_banned_3274_cem_", param_str, "_lifetime_d.csv")
+write.csv(matched_df, output_fpath, row.names = FALSE)
+```
+### 2-covariate
+
+```{r}
+cov_lifetime <- "lifetime_d"
+cov_size <- "n_post_author_till2019_log"
+#cov_size <- "n_post_author2019_log"
+
+vars <- c(cov_lifetime, cov_size)
+
+cut_probs <- list(
+  lifetime_d = seq(0.1, 0.9, by = 0.1),
+  n_post_author2019_log = seq(0.1, 0.9, by = 0.1),
+  n_post_author_till2019_log = seq(0.1, 0.9, by = 0.1)
+)
+
+cutpoints <- lapply(vars, function(v) {
+  quantile(df[[v]], probs = cut_probs[[v]], na.rm = TRUE)
+})
+
+names(cutpoints) <- vars
+
+formula_obj <- as.formula(paste("if_banned ~", paste(vars, collapse = " + ")))
+
+set.seed(42)
+
+m.out <- matchit(
+  formula_obj,
+  data = df,
+  method = "cem",
+  k2k = TRUE,
+  k2k.method = "mahalanobis",
+  m.order = "closest",
+  cutpoints = cutpoints
+)
+
+print(summary(m.out)$nn)
+print(cutpoints)
+
+matched_df <- match.data(m.out)
+
+print(imbalance(
+    group = matched_df$if_banned,
+    data = matched_df[vars]
+))
+
+summary(m.out, standardize = TRUE)
+
+# save output
+vars_str <- paste(vars, collapse = "_")
+param_str <- paste0("X", X, "N", N)
+output_fpath <- paste0("../../data/samples/cem-batch4-new/matched_table_banned_3274_cem_", param_str, "_", vars_str, ".csv")
+write.csv(matched_df, output_fpath, row.names = FALSE)
+```
+
+```{r}
+table(matched_df$weights)
+summary(matched_df$weights)
+
+library(MatchIt)
+
+# Get matched data
+matched_df <- match.data(m.out)
+
+# Split into treated and control
+treated  <- matched_df[matched_df$if_banned == 1, ]
+control  <- matched_df[matched_df$if_banned == 0, ]
+
+# KS test for each covariate
+ks_results <- lapply(vars, function(v) {
+  ks.test(treated[[v]], control[[v]])
+})
+names(ks_results) <- vars
+
+# Print results
+for (v in vars) {
+  cat("\nKS Test for:", v, "\n")
+  print(ks_results[[v]])
+}
+```

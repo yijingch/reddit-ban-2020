@@ -1,0 +1,164 @@
+---
+title: "evaluate covariate overlap"
+output: html_document
+date: "2026-05-11"
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(ggnewscale)
+```
+
+## load data
+
+```{r}
+df <- read.csv("../../data/samples/to_match_table_selfid_banned_3274_260528.csv")
+X <- Inf # A_max
+N <- 5 # P_min
+colname <- paste0("u_overlap_min_post_ban_", N)
+df <- df[df$lifetime_d > 0, ]
+df <- df[df[[colname]] <= X | df$if_banned == 1, ]
+table(df$if_banned) 
+df
+```
+
+## evaluate covariate overlap
+
+```{r}
+covariates <- c(
+  "lifetime_d",
+  "n_post_author2019_log",
+  "n_post_author_till2019_log",
+  "n_post2019_log",
+  "n_post_till2019_log"
+)
+```
+
+
+```{r}
+overlap_summary <- lapply(covariates, function(v) {
+  banned_vals <- df[df$if_banned == 1, v, drop = TRUE]
+  pool_vals   <- df[df$if_banned == 0, v, drop = TRUE]
+
+  data.frame(
+    covariate = v,
+    banned_min = min(banned_vals, na.rm = TRUE),
+    banned_max = max(banned_vals, na.rm = TRUE),
+    pool_min = min(pool_vals, na.rm = TRUE),
+    pool_max = max(pool_vals, na.rm = TRUE),
+    banned_outside_pool =
+      mean(banned_vals < min(pool_vals, na.rm = TRUE) |
+           banned_vals > max(pool_vals, na.rm = TRUE),
+           na.rm = TRUE)
+  )
+}) %>%
+  bind_rows()
+
+overlap_summary
+```
+## plot out distributions for two matching covariates
+
+```{r}
+# Keep only first two covariates
+covariates_plot <- covariates[1:2]
+
+X_values <- c(0, 1, 5, 10, 50, 100, Inf)
+colname <- paste0("u_overlap_min_post_ban_", N)
+
+# Plotmath-compatible labels
+X_labels <- ifelse(
+  is.infinite(X_values),
+  "Full~pool",
+  paste0("A[max] == ", X_values)
+)
+
+plot_df <- lapply(seq_along(X_values), function(i) {
+  
+  X <- X_values[i]
+  label <- X_labels[i]
+  
+  df %>%
+    filter(.data[[colname]] <= X | if_banned == 1) %>%
+    mutate(
+      X_threshold = label,
+      group = factor(
+        if_banned,
+        levels = c(0, 1),
+        labels = c("0 = others", "1 = banned")
+      )
+    )
+}) %>%
+  bind_rows() %>%
+  mutate(
+    X_threshold = factor(
+      X_threshold,
+      levels = X_labels
+    )
+  ) %>%
+  select(X_threshold, group, all_of(covariates_plot)) %>%
+  pivot_longer(
+    cols = all_of(covariates_plot),
+    names_to = "covariate",
+    values_to = "value"
+  ) %>%
+  mutate(
+    covariate = factor(
+      covariate,
+      levels = covariates_plot,
+      labels = c("lifetime", "total users to 2019")
+    )
+  )
+
+
+p <- ggplot(plot_df, aes(x = value, fill = group, color = group)) +
+  geom_density(
+    aes(y = after_stat(scaled)),
+    alpha = 0.35,
+    linewidth = 0.6
+  ) +
+  facet_grid(
+    rows = vars(X_threshold),
+    cols = vars(covariate),
+    scales = "free_x",
+    labeller = labeller(
+      X_threshold = label_parsed
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "0 = others" = "grey",
+      "1 = banned" = "darkred"
+    )
+  ) +
+  scale_color_manual(
+    values = c(
+      "0 = others" = "black",
+      "1 = banned" = "darkred"
+    )
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    strip.text = element_text(size = 10),
+    axis.text.x = element_text(size = 8),
+    axis.text.y = element_text(size = 8),
+    legend.position = "bottom"
+  ) +
+  labs(
+    fill = "group",
+    color = "group",
+    x = NULL,
+    y = "scaled density"
+  )
+
+p
+
+ggsave(
+  "../../output/appendix/covariate_overlap_by_X.pdf",
+  plot = p,
+  width = 5,
+  height = 7,
+  units = "in"
+)
+```
